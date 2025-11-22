@@ -1,0 +1,240 @@
+%% FNLMS算法与NLMS算法对比测试
+clear; close all; clc;
+
+% 1 参数设置
+N = 10000;              % 输入信号长度
+M = 256;                % 滤波器阶数
+num_runs = 10;           % 运行次数
+W0 = zeros(M, 1);      % 初始权重向量
+mu_NLMS = 1;           % NLMS算法步长参数 (0 < mu < 2)
+mu_FNLMS = 1.5;          % FNLMS算法步长参数
+save_run=1;
+
+% FNLMS特定参数
+lambda = 0.97;         % 用于跟踪未知系统变化的遗忘因子
+lambda_a = 0.946;     % 用于跟踪输入信号统计特性的遗忘因子
+c0 = 0.1; ca = 0.1; E0 = 0.1; % 正则化常数和初始值
+
+    % 存储统计结果
+    convergence_stats = zeros(2, num_runs); % [NLMS; FNLMS] 收敛次数
+    final_nmse_stats = zeros(2, num_runs);  % 最终NMSE
+
+    fprintf('开始 %d 次运行统计...\n\n', num_runs);
+
+    for run_idx = 1:num_runs
+    fprintf('运行 %d/%d...\n', run_idx, num_runs);
+    
+    % 2 生成AR(20)输入信号
+    fprintf('生成AR(20)输入信号...\n');
+
+    %% 参数设置
+    p = 20;                  % AR模型阶数
+    N_ar = N + 1000;         % 信号长度（包含瞬态）
+    sigma_w = 0.1;           % 白噪声方差（控制噪声强度）
+
+    % 随机生成AR系数（确保模型平稳，系数绝对值较小）
+   a = 0.9 * rand(1, p) .* (rand(1,p)-0.5);  % 更强相关性
+   a = a / sum(abs(a)) * 0.9;  % 控制在平稳区间
+
+    % 确保AR模型稳定
+    while true
+       a = 0.1 * randn(1, p);
+       poles = roots([1, -a]);
+      if all(abs(poles) < 1)
+          break;
+               end
+             end
+
+  %% 生成AR信号 - 使用arima模型
+  model = arima('AR', a, 'Constant', 0, 'Variance', sigma_w^2);
+  x_full = simulate(model, N_ar);  % 生成AR(20)信号
+  x_full = x_full'; % 转换为行向量
+
+   % 去除瞬态响应并归一化
+    x = x_full(1001:end);
+    if length(x) > N
+    x = x(1:N);
+       else
+           N = length(x); % 调整信号长度
+           fprintf('信号长度调整为: %d\n', N);
+       end
+
+    x = 0.15* x / std(x); % 归一化并调整幅度
+
+    fprintf('AR(20)信号生成完成，长度: %d\n', length(x));
+    fprintf('输入信号功率: %.4f\n', mean(x.^2));
+
+% 3 生成期望信号 d（改进的现实系统）
+fprintf('生成改进的现实系统期望信号...\n');
+
+% 创建非最小相位系统（更常见于实际情况）
+h_realistic = [0.9, -0.7, 0.5, -0.3, 0.2, 0.1, 0.05, zeros(1, M-7)]';
+h_realistic = h_realistic / norm(h_realistic);
+
+% 通过系统
+d_system = filter(h_realistic, 1, x);
+
+% 添加适度的测量噪声
+SNR_dB = 30;
+signal_power = mean(d_system.^2);
+noise_power = signal_power / (10^(SNR_dB/10));
+v = sqrt(noise_power) * randn(1, length(x));
+
+d = d_system + v;
+h = h_realistic;
+
+fprintf('现实系统生成完成\n');
+fprintf('系统阶数: %d, 信噪比: %d dB\n', M, SNR_dB);
+
+    % 4 分别使用simNLMS函数与simFNLMS函数进行自适应滤波
+    fprintf('运行NLMS算法...\n');
+    [y_NLMS, e_NLMS, W_NLMS, Mu] = simNLMS(x, d, mu_NLMS, W0);
+
+    fprintf('运行FNLMS算法...\n');
+    [y_FNLMS, e_FNLMS, W_FNLMS, MSE_FNLMS, gamma_history] = ...
+        simFNLMS(x, d, mu_FNLMS, W0, lambda, lambda_a, c0, ca, E0);
+
+    % 计算性能指标
+    NMSE_NLMS = e_NLMS.^2 / var(d);
+    NMSE_FNLMS = MSE_FNLMS / var(d);
+    
+    % 记录统计结果
+    target_db = -25;
+    nlms_conv = find(10*log10(NMSE_NLMS) <= target_db, 1);
+    fnlms_conv = find(10*log10(NMSE_FNLMS) <= target_db, 1);
+    
+    convergence_stats(1, run_idx) = ifempty(nlms_conv, N);
+    convergence_stats(2, run_idx) = ifempty(fnlms_conv, N);
+    final_nmse_stats(1, run_idx) = 10*log10(NMSE_NLMS(end));
+    final_nmse_stats(2, run_idx) = 10*log10(NMSE_FNLMS(end));
+    
+    % 保存指定运行的数据
+    if run_idx == save_run
+        fprintf('保存第%d次运行数据到MAT文件...\n', save_run);
+        
+        % 创建数据结构
+        saved_data = struct();
+        saved_data.run_index = run_idx;
+        saved_data.parameters = struct(...
+            'N', N, ...
+            'M', M, ...
+            'mu_NLMS', mu_NLMS, ...
+            'mu_FNLMS', mu_FNLMS, ...
+            'lambda', lambda, ...
+            'lambda_a', lambda_a, ...
+            'SNR_dB', SNR_dB);
+        
+        % 保存信号数据
+        saved_data.signals = struct(...
+            'x', x, ...                    % 输入信号
+            'd', d, ...                    % 期望信号
+            'd_system', d_system, ...      % 无噪声期望信号
+            'v', v, ...                    % 噪声信号
+            'y_NLMS', y_NLMS, ...          % NLMS输出
+            'e_NLMS', e_NLMS, ...          % NLMS误差
+            'y_FNLMS', y_FNLMS, ...        % FNLMS输出
+            'e_FNLMS', e_FNLMS, ...        % FNLMS误差
+            'h_realistic', h_realistic);   % 真实系统系数
+        
+        % 保存性能数据
+        saved_data.performance = struct(...
+            'NMSE_NLMS', NMSE_NLMS, ...
+            'NMSE_FNLMS', NMSE_FNLMS, ...
+            'W_NLMS', W_NLMS, ...
+            'W_FNLMS', W_FNLMS, ...
+            'Mu', Mu, ...
+            'gamma_history', gamma_history);
+        
+        % 保存到文件
+        filename = sprintf('FNLMS_VS_NLMS.mat', save_run);
+        save(filename, 'saved_data');
+        fprintf('数据已保存到: %s\n', filename);
+
+    % 只在最后一次运行时绘图
+    if run_idx == num_runs
+        fprintf('\n绘制最后一次运行结果...\n');
+        
+        % 5 绘制结果对比
+        figure('Position', [100, 100, 1200, 800]);
+
+        % 时域信号对比
+        % NLMS
+        subplot(2, 2, 1);
+        plot(1:length(x), d, 'k-', 'LineWidth', 1); hold on;
+        plot(1:length(x), y_NLMS, 'b-', 'LineWidth', 1);
+        plot(1:length(x), e_NLMS, 'r-', 'LineWidth', 1);
+        title('NLMS: 期望信号 vs 滤波器输出');
+        xlabel('样本'); ylabel('振幅');
+        legend('期望信号 d', 'NLMS 滤波器输出 y', 'NLMS 误差信号 e', 'Location', 'best');
+        grid on;
+        xlim([1, min(length(x), 1000)]);
+        % FNLMS
+        subplot(2, 2, 2);
+        plot(1:length(x), d, 'k-', 'LineWidth', 1); hold on;
+        plot(1:length(x), y_FNLMS, 'b-', 'LineWidth', 1);
+        plot(1:length(x), e_FNLMS, 'r-', 'LineWidth', 1);
+        title('FNLMS: 期望信号 vs 滤波器输出');
+        xlabel('样本'); ylabel('振幅');
+        legend('期望信号 d', 'FNLMS 滤波器输出 y', 'FNLMS 误差信号 e', 'Location', 'best');
+        grid on;
+        xlim([1, min(length(x), 1000)]);
+    % 学习曲线 - 系统误差
+        subplot(2, 2, 3);
+        sys_error_NLMS = zeros(1, length(x));
+        sys_error_FNLMS = zeros(1, length(x));
+        for i = 1:length(x)
+            sys_error_NLMS(i) = norm(W_NLMS(:, i) - h);
+            sys_error_FNLMS(i) = norm(W_FNLMS(:, i) - h);
+        end
+        semilogy(1:length(x), sys_error_NLMS, 'b-', 'LineWidth', 1.5); hold on;
+        semilogy(1:length(x), sys_error_FNLMS, 'r-', 'LineWidth', 1.5);
+        title('系统识别误差');
+        xlabel('迭代次数'); ylabel('权重误差范数');
+        legend('NLMS', 'FNLMS', 'Location', 'best');
+        grid on;
+
+        % Gamma参数历史
+        subplot(2, 2, 4);
+        plot(1:length(x), gamma_history, 'g-', 'LineWidth', 1.5);
+        title('FNLMS的Gamma参数变化');
+        xlabel('迭代次数'); ylabel('\gamma_N');
+        grid on;
+
+        tightfig;
+    end
+end
+
+% 6 性能统计
+fprintf('\n=== 算法性能统计 (%d次运行平均) ===\n', num_runs);
+fprintf('最终NMSE - NLMS:  %.2f ± %.2f dB\n', mean(final_nmse_stats(1, :)), std(final_nmse_stats(1, :)));
+fprintf('最终NMSE - FNLMS: %.2f ± %.2f dB\n', mean(final_nmse_stats(2, :)), std(final_nmse_stats(2, :)));
+
+fprintf('\n收敛到-25dB迭代次数:\n');
+fprintf('NLMS:  %.0f ± %.1f (范围: %d-%d)\n', ...
+    mean(convergence_stats(1, :)), std(convergence_stats(1, :)), ...
+    min(convergence_stats(1, :)), max(convergence_stats(1, :)));
+fprintf('FNLMS: %.0f ± %.1f (范围: %d-%d)\n', ...
+    mean(convergence_stats(2, :)), std(convergence_stats(2, :)), ...
+    min(convergence_stats(2, :)), max(convergence_stats(2, :)));
+
+speedup = mean(convergence_stats(1, :)) / mean(convergence_stats(2, :));
+fprintf('\nFNLMS收敛速度提升: %.2f倍\n', speedup);
+
+
+
+end
+% NLMS 步长变化和NLMS γ_N 变化
+figure;
+subplot(2,1,1);
+plot(Mu, 'b'); title('NLMS 步长变化'); grid on;
+subplot(2,1,2);
+plot(gamma_history, 'r'); title('FNLMS γ_N 变化'); grid on;
+
+% 辅助函数
+function result = ifempty(value, default)
+    if isempty(value)
+        result = default;
+    else
+        result = value;
+    end
+end
