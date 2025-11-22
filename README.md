@@ -1,13 +1,9 @@
-# LMS, NLMS, VSLMS 对比
-Originally Designed by linmh0130@stu.xjtu.edu.cn
-
-Refined (or rather, muddled with more errors ) by [24s153046@stu.hit.edu.cn](mailto:24s153046@stu.hit.edu.cn)
-
+# NLMS, FNLMS 对比
 ---
 
-simLMS.m：用于仿真的LMS函数
-
 simNLMS.m：用于仿真的NLMS函数
+
+simFNLMS.m：用于仿真的FNLMS函数
 
 simVSLMS.m：用于仿真的VSLMS函数
 
